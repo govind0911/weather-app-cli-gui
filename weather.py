@@ -1,62 +1,182 @@
-# weather.py
-# Simple scraper for timeanddate.com (prints current temperature)
 import requests
 from bs4 import BeautifulSoup
+import re
+from urllib.parse import urlparse
 
-def slug(s: str) -> str:
-    return s.strip().lower().replace(' ', '-')
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
 
-def get_temp_from_timeanddate(country_slug, city_slug):
-    url = f"https://www.timeanddate.com/weather/{country_slug}/{city_slug}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+def slug(text):
+    text = text.strip().lower()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"\s+", "-", text)
+    return text
+
+def create_session():
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    return session
+
+def fetch_page(session, url):
+    for _ in range(3):
+        try:
+            response = session.get(url, timeout=15)
+            response.raise_for_status()
+            return response.text, None
+        except requests.RequestException as e:
+            error = str(e)
+    return None, error
+
+def parse_weather(html):
+    soup = BeautifulSoup(html, "html.parser")
+
+    result = {
+        "temperature": "N/A",
+        "condition": "N/A",
+        "feels_like": "N/A",
+        "humidity": "N/A",
+        "wind": "N/A",
+        "visibility": "N/A"
     }
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-    except requests.RequestException as e:
-        return None, f"Network error: {e}"
 
-    if resp.status_code != 200:
-        return None, f"Bad response: {resp.status_code} for URL {url}"
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Main quick-look box normally has id="qlook"
     qlook = soup.find("div", id="qlook")
+
     if qlook:
-        temp_div = qlook.find("div", class_="h2")
+        temp = qlook.find("div", class_="h2")
         desc = qlook.find("p")
-    else:
-        # fallback: try to find any div with class h2
-        temp_div = soup.find("div", class_="h2")
-        desc = None
 
-    if temp_div:
-        temp_text = temp_div.get_text(strip=True)
-        desc_text = desc.get_text(strip=True) if desc else ""
-        return f"{temp_text} {desc_text}".strip(), None
+        if temp:
+            result["temperature"] = temp.get_text(" ", strip=True)
 
-    # If we reach here, we couldn't find the temperature
-    return None, "Couldn't find temperature on the page. Maybe the city/country is wrong or site layout changed."
+        if desc:
+            result["condition"] = desc.get_text(" ", strip=True)
+
+    table = soup.find("table")
+
+    if table:
+        rows = table.find_all("tr")
+
+        for row in rows:
+            cells = row.find_all(["th", "td"])
+
+            if len(cells) < 2:
+                continue
+
+            key = cells[0].get_text(" ", strip=True).lower()
+            value = cells[1].get_text(" ", strip=True)
+
+            if "feels like" in key:
+                result["feels_like"] = value
+
+            elif "humidity" in key:
+                result["humidity"] = value
+
+            elif "wind" in key:
+                result["wind"] = value
+
+            elif "visibility" in key:
+                result["visibility"] = value
+
+    return result
+
+def build_url(country, city):
+    return f"https://www.timeanddate.com/weather/{slug(country)}/{slug(city)}"
+
+def print_weather(city, country, weather):
+    print("\n" + "=" * 60)
+    print(f"Weather for {city.title()}, {country.title()}")
+    print("=" * 60)
+
+    print(f"Temperature : {weather['temperature']}")
+    print(f"Condition   : {weather['condition']}")
+    print(f"Feels Like  : {weather['feels_like']}")
+    print(f"Humidity    : {weather['humidity']}")
+    print(f"Wind        : {weather['wind']}")
+    print(f"Visibility  : {weather['visibility']}")
+
+    print("=" * 60)
+
+def get_weather_from_url(url):
+    parsed = urlparse(url)
+
+    if "timeanddate.com" not in parsed.netloc:
+        return None, "URL must be from timeanddate.com"
+
+    session = create_session()
+
+    html, error = fetch_page(session, url)
+
+    if error:
+        return None, error
+
+    weather = parse_weather(html)
+
+    return weather, None
+
+def get_weather(country, city):
+    session = create_session()
+
+    url = build_url(country, city)
+
+    html, error = fetch_page(session, url)
+
+    if error:
+        return None, error
+
+    weather = parse_weather(html)
+
+    return weather, None
 
 def main():
-    print("== Local Weather CLI (timeanddate.com) ==")
-    city = input("City (e.g., Kochi): ").strip()
-    if not city:
-        print("You must enter a city. Exiting.")
-        return
-    country = input("Country (e.g., india) [press Enter for 'india']: ").strip() or "india"
+    print("=" * 60)
+    print("ADVANCED WEATHER CLI")
+    print("=" * 60)
 
-    cslug = slug(country)
-    cityslug = slug(city)
+    mode = input(
+        "\n1. Search by city\n2. Use full URL\n\nSelect (1/2): "
+    ).strip()
 
-    temp, err = get_temp_from_timeanddate(cslug, cityslug)
-    if temp:
-        print(f"Current in {city.title()}, {country.title()}: {temp}")
+    if mode == "2":
+        url = input("\nEnter timeanddate URL: ").strip()
+
+        if not url:
+            print("No URL entered.")
+            return
+
+        weather, error = get_weather_from_url(url)
+
+        if error:
+            print(f"\nError: {error}")
+            return
+
+        print("\n" + "=" * 60)
+
+        for key, value in weather.items():
+            print(f"{key.replace('_', ' ').title():12}: {value}")
+
+        print("=" * 60)
+
     else:
-        print("Error:", err)
-        print("Tip: If this fails, try entering the 'full URL' of the timeanddate page for your city instead.")
-        print("Example URL format: https://www.timeanddate.com/weather/india/kochi")
+        city = input("\nCity: ").strip()
+
+        if not city:
+            print("City is required.")
+            return
+
+        country = input("Country [default: india]: ").strip() or "india"
+
+        weather, error = get_weather(country, city)
+
+        if error:
+            print(f"\nError: {error}")
+            print(
+                f"Try visiting:\n{build_url(country, city)}"
+            )
+            return
+
+        print_weather(city, country, weather)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nProgram interrupted.")
